@@ -74,12 +74,15 @@ same arguments, and encoder.c does error check.
 #include "cauchy.h"
 #include "liberation.h"
 #include "timing.h"
+#include "raid6.h"
+#include "test.h"
+#include "rotatedrs.h"
 
-#define N 10
+#define N 15
 
-enum Coding_Technique {Reed_Sol_Van, Reed_Sol_R6_Op, Cauchy_Orig, Cauchy_Good, Liberation, Blaum_Roth, Liber8tion, RDP, EVENODD, No_Coding};
+enum Coding_Technique {Reed_Sol_Van, Reed_Sol_R6_Op, Cauchy_Orig, Cauchy_Good, Liberation, Blaum_Roth, Liber8tion, RDP, EVENODD, RAID6, ROTATEDRS, No_Coding};
 
-char *Methods[N] = {"reed_sol_van", "reed_sol_r6_op", "cauchy_orig", "cauchy_good", "liberation", "blaum_roth", "liber8tion", "rdp", "evenodd", "no_coding"};
+char *Methods[N] = {"reed_sol_van", "reed_sol_r6_op", "cauchy_orig", "cauchy_good", "liberation", "blaum_roth", "liber8tion", "rdp", "evenodd", "RAID6", "rotated_rs", "no_coding"};
 
 /* Global variables for signal handler */
 enum Coding_Technique method;
@@ -228,7 +231,9 @@ int main (int argc, char **argv) {
 			matrix = reed_sol_vandermonde_coding_matrix(k, m, w);
 			break;
 		case Reed_Sol_R6_Op:
+			printf("reed_sol_r6 decoder:\n");
 			matrix = reed_sol_r6_coding_matrix(k, w);
+			jerasure_print_matrix(matrix, m, k, w);
 			break;
 		case Cauchy_Orig:
 			matrix = cauchy_original_coding_matrix(k, m, w);
@@ -246,6 +251,16 @@ int main (int argc, char **argv) {
 			break;
 		case Liber8tion:
 			bitmatrix = liber8tion_coding_bitmatrix(k);
+			break;
+		case RAID6:
+			matrix = cauchy_good_general_coding_matrix(k, m, w);
+			jerasure_print_matrix(matrix, m, k, w);
+			break;
+		case ROTATEDRS:
+			printf("rotated_rs decoder:\n");
+			matrix = rotatedrs_coding_matrix(k, m, w);
+			jerasure_print_matrix(matrix, m, k, w);
+			break;
 	}
 	timing_set(&t4);
 	totalsec += timing_delta(&t3, &t4);
@@ -261,9 +276,8 @@ int main (int argc, char **argv) {
 			fp = fopen(fname, "rb");
 			if (fp == NULL) {
 				erased[i-1] = 1;
-				erasures[numerased] = i-1;
+				erasures[numerased] = i-1; // i表示被删除的file id
 				numerased++;
-				//printf("%s failed\n", fname);
 			}
 			else {
 				if (buffersize == origsize) {
@@ -286,7 +300,6 @@ int main (int argc, char **argv) {
 				erased[k+(i-1)] = 1;
 				erasures[numerased] = k+i-1;
 				numerased++;
-				//printf("%s failed\n", fname);
 			}
 			else {
 				if (buffersize == origsize) {
@@ -323,6 +336,12 @@ int main (int argc, char **argv) {
 		}
 		else if (tech == Cauchy_Orig || tech == Cauchy_Good || tech == Liberation || tech == Blaum_Roth || tech == Liber8tion) {
 			i = jerasure_schedule_decode_lazy(k, m, w, bitmatrix, erasures, data, coding, blocksize, packetsize, 1);
+		} else if(tech == RDP) {
+			i = 1;
+		} else if(tech == RAID6) {
+			i = raid6_decode(k, m, w, matrix, erasures, data, coding, blocksize);
+		} else if(tech == ROTATEDRS) {
+			i = rotatedrs_decode(k, m, w, erasures, data, coding, blocksize);
 		}
 		else {
 			fprintf(stderr, "Not a valid coding technique.\n");
@@ -362,6 +381,22 @@ int main (int argc, char **argv) {
 				}
 			}
 		}
+		fclose(fp);
+		sprintf(fname, "%s/Coding/%s_erased_m%s", curdir, cs1, extension);
+		if (n == 1) {
+			fp = fopen(fname, "wb");
+		}
+		else {
+			fp = fopen(fname, "ab");
+		}
+		for (i = 0; i < m; i++) {
+			// if(erased[k+i]) {
+				// if (total+blocksize <= origsize) {
+					fwrite(coding[i], sizeof(char), blocksize, fp);
+					// total+= blocksize;
+				// }
+			// }
+		}
 		n++;
 		fclose(fp);
 		totalsec += timing_delta(&t3, &t4);
@@ -382,6 +417,9 @@ int main (int argc, char **argv) {
 	printf("Decoding (MB/sec): %0.10f\n", (((double) origsize)/1024.0/1024.0)/totalsec);
 	printf("De_Total (MB/sec): %0.10f\n\n", (((double) origsize)/1024.0/1024.0)/tsec);
 
+	test(k, m, 4);
+	// test(k, 0, k);
+	
 	return 0;
 }	
 

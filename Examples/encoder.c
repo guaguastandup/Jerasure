@@ -72,12 +72,14 @@ is the file name with "_k#" or "_m#" and then the extension.
 #include "cauchy.h"
 #include "liberation.h"
 #include "timing.h"
+#include "raid6.h"
+#include "rotatedrs.h"
 
-#define N 10
+#define N 15
 
-enum Coding_Technique {Reed_Sol_Van, Reed_Sol_R6_Op, Cauchy_Orig, Cauchy_Good, Liberation, Blaum_Roth, Liber8tion, RDP, EVENODD, No_Coding};
+enum Coding_Technique {Reed_Sol_Van, Reed_Sol_R6_Op, Cauchy_Orig, Cauchy_Good, Liberation, Blaum_Roth, Liber8tion, RDP, EVENODD, RAID6, ROTATEDRS, No_Coding};
 
-char *Methods[N] = {"reed_sol_van", "reed_sol_r6_op", "cauchy_orig", "cauchy_good", "liberation", "blaum_roth", "liber8tion", "no_coding"};
+char *Methods[N] = {"reed_sol_van", "reed_sol_r6_op", "cauchy_orig", "cauchy_good", "liberation", "blaum_roth", "liber8tion", "RDP", "evenodd", "RAID6", "rotated_rs", "no_coding"};
 
 /* Global variables for signal handler */
 int readins, n;
@@ -154,15 +156,15 @@ int main (int argc, char **argv) {
 		exit(0);
 	}
 	/* Conversion of parameters and error checking */	
-	if (sscanf(argv[2], "%d", &k) == 0 || k <= 0) {
+	if (sscanf(argv[2], "%d", &k) == 0 || k <= 0) { // k
 		fprintf(stderr,  "Invalid value for k\n");
 		exit(0);
 	}
-	if (sscanf(argv[3], "%d", &m) == 0 || m < 0) {
+	if (sscanf(argv[3], "%d", &m) == 0 || m < 0) { //  mb
 		fprintf(stderr,  "Invalid value for m\n");
 		exit(0);
 	}
-	if (sscanf(argv[5],"%d", &w) == 0 || w <= 0) {
+	if (sscanf(argv[5],"%d", &w) == 0 || w <= 0) { // w
 		fprintf(stderr,  "Invalid value for w.\n");
 		exit(0);
 	}
@@ -315,6 +317,14 @@ int main (int argc, char **argv) {
 			exit(0);
 		}
 		tech = Liber8tion;
+	} 
+	else if (strcmp(argv[4], "rdp") == 0) {
+		tech = RDP;
+	} 
+	else if (strcmp(argv[4], "RAID6") == 0) {
+		tech = RAID6;
+	} else if(strcmp(argv[4], "rotated_rs") == 0) {
+		tech = ROTATEDRS;
 	}
 	else {
 		fprintf(stderr,  "Not a valid coding technique. Choose one of the following: reed_sol_van, reed_sol_r6_op, cauchy_orig, cauchy_good, liberation, blaum_roth, liber8tion, no_coding\n");
@@ -378,7 +388,6 @@ int main (int argc, char **argv) {
 		}
 	}
 
-
 	/* Determine size of k+m files */
 	blocksize = newsize/k;
 
@@ -399,6 +408,12 @@ int main (int argc, char **argv) {
 		block = (char *)malloc(sizeof(char)*newsize);
 	}
 	
+
+	printf("\nencoder:\nblock size: %d\n", blocksize);
+	printf("buffer size: %d\n", buffersize);
+	printf("size: %d\n", size);
+	printf("readins: %d\n", readins);
+
 	/* Break inputfile name into the filename and extension */	
 	s1 = (char*)malloc(sizeof(char)*(strlen(argv[1])+20));
 	s2 = strrchr(argv[1], '/');
@@ -416,7 +431,7 @@ int main (int argc, char **argv) {
 	} else {
           extension = strdup("");
         }
-	
+
 	/* Allocate for full file name */
 	fname = (char*)malloc(sizeof(char)*(strlen(argv[1])+strlen(curdir)+20));
 	sprintf(temp, "%d", k);
@@ -424,7 +439,7 @@ int main (int argc, char **argv) {
 	
 	/* Allocate data and coding */
 	data = (char **)malloc(sizeof(char*)*k);
-	coding = (char **)malloc(sizeof(char*)*m);
+	coding = (char **)malloc(sizeof(char*)*m); // coding[m][blocksize]
 	for (i = 0; i < m; i++) {
 		coding[i] = (char *)malloc(sizeof(char)*blocksize);
                 if (coding[i] == NULL) { perror("malloc"); exit(1); }
@@ -438,7 +453,11 @@ int main (int argc, char **argv) {
 		case No_Coding:
 			break;
 		case Reed_Sol_Van:
+			// 生成编码矩阵(范德蒙德矩阵)的函数
+			// 返回编码矩阵的最后m行
 			matrix = reed_sol_vandermonde_coding_matrix(k, m, w);
+			jerasure_print_matrix(matrix, k, m, w);
+			jerasure_print_matrix(matrix, m, k, w);
 			break;
 		case Reed_Sol_R6_Op:
 			break;
@@ -465,6 +484,23 @@ int main (int argc, char **argv) {
 			schedule = jerasure_smart_bitmatrix_to_schedule(k, m, w, bitmatrix);
 			break;
 		case RDP:
+			// no need for coding matrix
+			// matrix = rdp_ok(k, m, w);
+			break;
+		case RAID6:
+			// matrix = cauchy_good_general_coding_matrix(m, k, w);
+			// jerasure_print_matrix(matrix, m, k, w);
+			matrix = cauchy_good_general_coding_matrix(k, m, w);
+			for(int i=0;i<m;i++) {
+				for(int j=0;j<k;j++) {
+					printf("  %d", matrix[i*k+j]);
+				}
+				printf("\n");
+			}
+			// jerasure_print_matrix(matrix, m, k, w);
+			break;
+		case ROTATEDRS:
+			break;
 		case EVENODD:
 			assert(0);
 	}
@@ -472,17 +508,16 @@ int main (int argc, char **argv) {
 	timing_set(&t4);
 	totalsec += timing_delta(&t3, &t4);
 
-	
-
 	/* Read in data until finished */
 	n = 1;
 	total = 0;
 
+	// we define blocksize is not one-single block size
 	while (n <= readins) {
 		/* Check if padding is needed, if so, add appropriate 
 		   number of zeros */
 		if (total < size && total+buffersize <= size) {
-			total += jfread(block, sizeof(char), buffersize, fp);
+			total += jfread(block, sizeof(char), buffersize, fp); // 读buffersize个
 		}
 		else if (total < size && total+buffersize > size) {
 			extra = jfread(block, sizeof(char), buffersize, fp);
@@ -495,7 +530,7 @@ int main (int argc, char **argv) {
 				block[i] = '0';
 			}
 		}
-	
+
 		/* Set pointers to point to file data */
 		for (i = 0; i < k; i++) {
 			data[i] = block+(i*blocksize);
@@ -528,6 +563,15 @@ int main (int argc, char **argv) {
 				jerasure_schedule_encode(k, m, w, schedule, data, coding, blocksize, packetsize);
 				break;
 			case RDP:
+				// get the coding block & parity block
+				// rdp_encode(k, m, w, data, coding, blocksize);
+				break;
+			case RAID6:
+				raid6_encode(k, m, w, matrix, data, coding, blocksize);
+				break;
+			case ROTATEDRS:
+				rotatedrs_encode(k, m, w, data, coding, blocksize);
+				break;
 			case EVENODD:
 				assert(0);
 		}
